@@ -1,259 +1,187 @@
-import sys
+import streamlit as st
 import fitz  # PyMuPDF
-from datetime import datetime
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QLineEdit, QTextEdit, 
-                             QDateEdit, QTimeEdit, QComboBox, QCheckBox, 
-                             QPushButton, QTabWidget, QFileDialog, QScrollArea,
-                             QMessageBox, QGroupBox, QGridLayout)
-from PyQt6.QtCore import QDate, Qt
+import io
+from datetime import datetime, time
 
-# --- RISK DATABASE (Ported from your JS) ---
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Rapid TMP Generator", page_icon="🚧", layout="wide")
+
+# --- RISK LOGIC (Your Logic) ---
 RISK_LIBRARY = {
-    "lvr": {
-        "hazard": "Low Volume Rural (LVR)", 
-        "score": 25, 
-        "controls": "Use extended tapers. TSL mandatory. Positive traffic control required if sight distance is poor.", 
-        "res": 6
-    },
-    "live_lane": {
-        "hazard": "Worker Exposure in Live Lanes", 
-        "score": 25, 
-        "controls": "Isolate work area. Safety spotter for workers on foot. High-vis PPE mandatory.", 
-        "res": 9
-    },
-    "height": {
-        "hazard": "Overhead Services / Height", 
-        "score": 15, 
-        "controls": "Maintain 4m approach distance (MAD). Dedicated spotter for plant. Permit-to-dig if underground.", 
-        "res": 4
-    },
-    "pedestrian": {
-        "hazard": "Pedestrian Interface", 
-        "score": 16, 
-        "controls": "Physical barriers (cone bars). Safe alternative route. Accessible for wheelchairs/prams.", 
-        "res": 4
-    },
-    "machinery": {
-        "hazard": "Plant & Machinery", 
-        "score": 16, 
-        "controls": "360-degree checks. Spotter for reversing. Competent operators only.", 
-        "res": 4
-    },
-    "stopgo": {
-        "hazard": "Stop-Go Traffic Control", 
-        "score": 16, 
-        "controls": "Maintain safety zones. Adequate sight distance. Clear radio comms between MTCs.", 
-        "res": 6
-    }
+    "lvr": {"label": "Low Volume Rural (LVR)", "score": "25", "controls": "Extended tapers. TSL mandatory. 100km/h warning distance.", "res": "6"},
+    "live_lane": {"label": "Work in Live Lane", "score": "25", "controls": "Safety spotter required. High-vis PPE. Cone delineation.", "res": "9"},
+    "height": {"label": "Overhead Services / Height", "score": "15", "controls": "Maintain 4m MAD. Dedicated spotter. Permit-to-dig.", "res": "4"},
+    "pedestrian": {"label": "Pedestrian Interface", "score": "16", "controls": "Cone bars/fencing. Safe alternative route. Accessible for prams.", "res": "4"},
+    "machinery": {"label": "Plant & Machinery", "score": "16", "controls": "360 checks. Spotter for reversing. Competent operators.", "res": "4"},
+    "stopgo": {"label": "Stop/Go Operation", "score": "16", "controls": "Maintain safety zones. Clear sight lines. Radio comms.", "res": "6"},
 }
 
-class TMPGenerator(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Traffic Safe TMP Generator")
-        self.setGeometry(100, 100, 1000, 800)
-        self.tmd_image_path = None
+# --- HEADER ---
+st.title("🚧 Rapid Traffic Management Plan (TMP) Generator")
+st.markdown("Generate **NZGTTM Compliant** PDFs instantly. Fill the form below.")
 
-        # Main Layout
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        self.layout = QVBoxLayout(main_widget)
+# --- SIDEBAR: PRESETS ---
+with st.sidebar:
+    st.header("⚡ Quick Load Presets")
+    preset = st.selectbox("Select Activity Type:", ["Custom", "Pole Maintenance", "Transformer Replacement", "Geotech Drilling"])
+    
+    # Preset Logic
+    if preset == "Pole Maintenance":
+        def_desc = "Undertaking pole maintenance along road corridor. Replacing HV/LV pins."
+        def_plant = "Bucket Trucks, Utes"
+        def_method = "Mobile Operation for install/removal. Stop/Go for works."
+    elif preset == "Geotech Drilling":
+        def_desc = "Drilling Borehole in loading bay/berm."
+        def_plant = "Drill Rig, Ute"
+        def_method = "Shoulder Closure. Work limited to berm."
+    else:
+        def_desc = ""
+        def_plant = ""
+        def_method = ""
 
-        # Header
-        header = QLabel("Rapid TMP Generator - NZGTTM Standard")
-        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #2563eb; margin-bottom: 10px;")
-        self.layout.addWidget(header)
+# --- FORM TABS ---
+tab1, tab2, tab3 = st.tabs(["📝 General Details", "⚠️ Risk Assessment", "🗺️ Diagram"])
 
-        # Tabs
-        self.tabs = QTabWidget()
-        self.layout.addWidget(self.tabs)
-
-        # Init Tabs
-        self.init_general_tab()
-        self.init_risk_tab()
-        self.init_diagram_tab()
-
-        # Generate Button
-        btn_generate = QPushButton("GENERATE PDF")
-        btn_generate.setFixedHeight(50)
-        btn_generate.setStyleSheet("background-color: #16a34a; color: white; font-weight: bold; font-size: 16px;")
-        btn_generate.clicked.connect(self.generate_pdf)
-        self.layout.addWidget(btn_generate)
-
-    def init_general_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+with tab1:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Reference Info")
+        tmp_ref = st.text_input("TMP Reference No.", placeholder="e.g. 150126001")
+        contract_ref = st.text_input("RCA / Contract Reference", placeholder="e.g. CAR 12345")
         
-        # --- Presets ---
-        preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Quick Preset:"))
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["Select Preset...", "Pole Maintenance", "Transformer Replacement", "Geotech Drilling"])
-        self.preset_combo.currentTextChanged.connect(self.apply_preset)
-        preset_layout.addWidget(self.preset_combo)
-        layout.addLayout(preset_layout)
+        st.subheader("Road Characteristics")
+        road_name = st.text_input("Road Name(s)", placeholder="e.g. Meremere Road")
+        suburb = st.text_input("Suburb", placeholder="e.g. Ohangai")
+        road_level = st.selectbox("Road Level", ["Low Volume", "Level 1", "Level 2", "Level 3"])
+        speed = st.number_input("Permanent Speed (km/h)", value=100, step=10)
+        aadt = st.number_input("AADT (Daily Traffic)", value=250, step=50)
 
-        # --- Form Grid ---
-        grid = QGridLayout()
-        
-        # Row 1
-        grid.addWidget(QLabel("TMP Reference:"), 0, 0)
-        self.inp_ref = QLineEdit()
-        grid.addWidget(self.inp_ref, 0, 1)
-
-        grid.addWidget(QLabel("Road Name:"), 0, 2)
-        self.inp_road = QLineEdit()
-        grid.addWidget(self.inp_road, 0, 3)
-
-        # Row 2
-        grid.addWidget(QLabel("Start Date:"), 1, 0)
-        self.inp_start_date = QDateEdit(calendarPopup=True)
-        self.inp_start_date.setDate(QDate.currentDate())
-        grid.addWidget(self.inp_start_date, 1, 1)
-
-        grid.addWidget(QLabel("End Date:"), 1, 2)
-        self.inp_end_date = QDateEdit(calendarPopup=True)
-        self.inp_end_date.setDate(QDate.currentDate())
-        grid.addWidget(self.inp_end_date, 1, 3)
-
-        # Row 3
-        grid.addWidget(QLabel("Activity Description:"), 2, 0)
-        self.inp_desc = QTextEdit()
-        self.inp_desc.setMaximumHeight(60)
-        grid.addWidget(self.inp_desc, 2, 1, 1, 3) # Span 3 cols
-
-        # Row 4
-        grid.addWidget(QLabel("Plant Required:"), 3, 0)
-        self.inp_plant = QLineEdit()
-        grid.addWidget(self.inp_plant, 3, 1, 1, 3)
-
-        layout.addLayout(grid)
-        layout.addStretch()
-        self.tabs.addTab(tab, "1. General Details")
-
-    def init_risk_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        lbl = QLabel("Select Applicable Hazards (Auto-fills Risk Assessment)")
-        lbl.setStyleSheet("font-weight: bold;")
-        layout.addWidget(lbl)
-
-        # Checkboxes
-        self.risk_checks = {}
-        for key, data in RISK_LIBRARY.items():
-            cb = QCheckBox(data["hazard"])
-            self.risk_checks[key] = cb
-            layout.addWidget(cb)
-
-        layout.addStretch()
-        self.tabs.addTab(tab, "2. Risk Assessment")
-
-    def init_diagram_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        lbl = QLabel("Upload Traffic Management Diagram (Image)")
-        layout.addWidget(lbl)
-
-        btn_upload = QPushButton("Select Image File (JPG/PNG)")
-        btn_upload.clicked.connect(self.upload_image)
-        layout.addWidget(btn_upload)
-
-        self.lbl_image_status = QLabel("No image selected")
-        layout.addWidget(self.lbl_image_status)
-
-        layout.addStretch()
-        self.tabs.addTab(tab, "3. Diagram")
-
-    def upload_image(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Select Diagram", "", "Image Files (*.png *.jpg *.jpeg)")
-        if file_name:
-            self.tmd_image_path = file_name
-            self.lbl_image_status.setText(f"Selected: {file_name.split('/')[-1]}")
-
-    def apply_preset(self, text):
-        # Auto-fill logic based on your previous presets
-        if text == "Pole Maintenance":
-            self.inp_desc.setText("Undertaking pole maintenance along road corridor. Replacing HV/LV pins.")
-            self.inp_plant.setText("Bucket Trucks, Utes")
-            self.risk_checks['lvr'].setChecked(True)
-            self.risk_checks['live_lane'].setChecked(True)
-            self.risk_checks['height'].setChecked(True)
-        elif text == "Geotech Drilling":
-            self.inp_desc.setText("Drilling Borehole in loading bay.")
-            self.inp_plant.setText("Drill Rig, Ute")
-            self.risk_checks['pedestrian'].setChecked(True)
-            self.risk_checks['machinery'].setChecked(True)
-            self.risk_checks['lvr'].setChecked(False)
-
-    def generate_pdf(self):
-        try:
-            # 1. Open Template
-            doc = fitz.open("template.pdf")
-            page1 = doc[0]  # First page (0-index)
-
-            # 2. Define Text Insertion Helper
-            # You must MEASURE your PDF to find these x, y coordinates
-            def insert_text(page, text, x, y, size=11):
-                page.insert_text((x, y), str(text), fontsize=size, fontname="helv", color=(0, 0, 0))
-
-            # 3. Insert General Data (Coordinates are EXAMPLES - You need to adjust them)
-            insert_text(page1, self.inp_ref.text(), 450, 100)  # Top Right Ref
-            insert_text(page1, self.inp_road.text(), 50, 250)  # Road Name Table
-            insert_text(page1, self.inp_desc.toPlainText(), 50, 400) # Desc
+    with col2:
+        st.subheader("Programme (Dates/Times)")
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            start_date = st.date_input("Start Date")
+            start_time = st.time_input("Start Time", value=time(7,0))
+        with d_col2:
+            end_date = st.date_input("End Date")
+            end_time = st.time_input("End Time", value=time(19,0))
             
-            # Dates
-            s_date = self.inp_start_date.date().toString("dd/MM/yyyy")
-            insert_text(page1, s_date, 150, 300)
+        st.subheader("Activity Details")
+        activity_desc = st.text_area("Description of Activity", value=def_desc, height=100)
+        plant_req = st.text_input("Plant Required", value=def_plant)
+        methodology = st.text_area("Work Methodology / Phasing", value=def_method, height=100)
 
-            # 4. Insert Risk Assessment Data
-            # Assuming Risk Assessment is on Page 7 (Index 6)
-            if len(doc) > 6:
-                risk_page = doc[6]
-                y_pos = 200 # Starting Y position for the table
-                
-                # Default "Site Establishment" Risk
-                insert_text(risk_page, "Site Establishment", 50, y_pos)
-                insert_text(risk_page, "16", 200, y_pos)
-                insert_text(risk_page, "Standard Setup Controls...", 250, y_pos, size=9)
-                y_pos += 40
+with tab2:
+    st.subheader("Select Applicable Hazards")
+    st.info("The app will automatically populate the Risk Register page based on your selection.")
+    
+    selected_risks = []
+    r_col1, r_col2 = st.columns(2)
+    
+    # Create checkboxes for risks
+    keys = list(RISK_LIBRARY.keys())
+    half = len(keys)//2
+    
+    with r_col1:
+        for k in keys[:half]:
+            if st.checkbox(RISK_LIBRARY[k]["label"], value=(preset!="Custom")):
+                selected_risks.append(k)
+    with r_col2:
+        for k in keys[half:]:
+            if st.checkbox(RISK_LIBRARY[k]["label"]):
+                selected_risks.append(k)
 
-                # Dynamic Risks
-                for key, cb in self.risk_checks.items():
-                    if cb.isChecked():
-                        risk = RISK_LIBRARY[key]
-                        insert_text(risk_page, risk["hazard"], 50, y_pos)
-                        insert_text(risk_page, str(risk["score"]), 200, y_pos)
-                        # Text wrap for controls might be needed for long text
-                        insert_text(risk_page, risk["controls"], 250, y_pos, size=8)
-                        y_pos += 40
+    # Manual Override
+    extra_risk = st.text_area("Add Custom Site Specific Risk (Optional)")
 
-            # 5. Insert Diagram (Image)
-            # Assuming Diagram goes on the last page or a specific page
-            if self.tmd_image_path:
-                # Add a new page for the diagram if needed, or overlay on existing
-                # page_diagram = doc.new_page() 
-                # OR use existing:
-                page_diagram = doc[-1] 
-                
-                # Define rect for image [x0, y0, x1, y1]
-                rect = fitz.Rect(50, 100, 550, 700)
-                page_diagram.insert_image(rect, filename=self.tmd_image_path)
+with tab3:
+    st.subheader("Traffic Management Diagram (TMD)")
+    uploaded_tmd = st.file_uploader("Upload TMD Image (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    if uploaded_tmd:
+        st.image(uploaded_tmd, caption="Preview of Diagram", width=500)
 
-            # 6. Save
-            output_filename = f"TMP_{self.inp_ref.text()}_{datetime.now().strftime('%H%M')}.pdf"
-            doc.save(output_filename)
-            doc.close()
+# --- PDF GENERATION ENGINE ---
+def generate_pdf():
+    try:
+        # Load Template from the repo
+        doc = fitz.open("template.pdf")
+        page1 = doc[0]  # Page 1: General Form
+        
+        # Helper to draw text
+        def draw(page, text, x, y, size=10, color=(0,0,0)):
+            if text:
+                page.insert_text((x, y), str(text), fontsize=size, fontname="helv", color=color)
 
-            QMessageBox.information(self, "Success", f"PDF Generated Successfully:\n{output_filename}")
+        # --- MAPPING: GENERAL FORM (You must tune these X,Y coords) ---
+        draw(page1, tmp_ref, 450, 100, size=12)  # Top Ref
+        draw(page1, contract_ref, 450, 130)      # RCA Ref
+        draw(page1, road_name, 50, 280)          # Road Name Table
+        draw(page1, suburb, 150, 280)
+        draw(page1, f"{road_level}", 300, 280)
+        draw(page1, f"{speed} km/h", 400, 280)
+        draw(page1, f"{aadt}", 480, 280)
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+        # Dates Table (Approx coords)
+        draw(page1, f"{start_date}", 150, 380)
+        draw(page1, f"{end_date}", 400, 380)
+        draw(page1, f"{start_time}", 150, 410)
+        draw(page1, f"{end_time}", 400, 410)
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = TMPGenerator()
-    window.show()
-    sys.exit(app.exec())
+        # Page 2: Activity
+        page2 = doc[1]
+        draw(page2, activity_desc, 50, 150)
+        draw(page2, plant_req, 50, 200)
+        draw(page2, methodology, 50, 300)
+
+        # Page 6/7: Risk Register (Assuming it's later in your doc)
+        # Find the page that has "Risk Assessment" in text if possible, or hardcode index
+        # For now, let's assume Page 7 (Index 6)
+        if len(doc) > 6:
+            risk_page = doc[6]
+            y = 200
+            # Always add Site Establishment
+            draw(risk_page, "Site Establishment", 50, y)
+            draw(risk_page, "16", 200, y)
+            draw(risk_page, "Standard setup controls...", 250, y, size=8)
+            y += 40
+            
+            for r_key in selected_risks:
+                risk = RISK_LIBRARY[r_key]
+                draw(risk_page, risk['label'], 50, y)
+                draw(risk_page, risk['score'], 200, y)
+                draw(risk_page, risk['controls'], 250, y, size=8)
+                draw(risk_page, risk['res'], 500, y)
+                y += 40
+            
+            if extra_risk:
+                draw(risk_page, "Site Specific", 50, y)
+                draw(risk_page, extra_risk, 250, y, size=8)
+
+        # Diagram Page (Last Page)
+        if uploaded_tmd:
+            page_last = doc[-1]
+            # Overlay image. Rect(x0, y0, x1, y1)
+            page_last.insert_image(fitz.Rect(50, 100, 550, 700), stream=uploaded_tmd.read())
+
+        # Save to memory buffer
+        return doc.write()
+
+    except Exception as e:
+        st.error(f"Error generating PDF: {e}")
+        return None
+
+# --- ACTION BUTTON ---
+st.divider()
+if st.button("🚀 GENERATE TMP PDF", type="primary"):
+    pdf_bytes = generate_pdf()
+    
+    if pdf_bytes:
+        st.success("TMP Generated Successfully!")
+        filename = f"TMP_{tmp_ref if tmp_ref else 'Draft'}_{datetime.now().strftime('%H%M')}.pdf"
+        
+        st.download_button(
+            label="⬇️ Download PDF",
+            data=pdf_bytes,
+            file_name=filename,
+            mime="application/pdf"
+        )
